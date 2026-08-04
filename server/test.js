@@ -41,6 +41,12 @@ async function main() {
   await new Promise((r) => setTimeout(r, 500));
 
   try {
+    // 0) 개인정보 처리방침 페이지 (App Store 심사용)
+    const privacyRes = await fetch(`http://127.0.0.1:${PORT}/privacy`);
+    const privacyBody = await privacyRes.text();
+    assert(privacyRes.status === 200 && privacyBody.includes('개인정보 처리방침'),
+      '개인정보 처리방침 페이지 응답');
+
     // 1) 방 생성
     const host = await connect();
     host.send(JSON.stringify({ type: 'create' }));
