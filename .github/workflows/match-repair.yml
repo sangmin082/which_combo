@@ -1,0 +1,62 @@
+name: Match Repair
+
+# 인증서 저장 repo에서 폐기(revoke)된 배포 인증서와 그것을 참조하는 프로파일을 제거한다.
+# 실행 후 TestFlight 워크플로를 돌리면 match가 새 배포 인증서를 자동 발급한다.
+# (일회용 — Dev Portal에서 인증서가 폐기됐을 때만 수동 실행)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 저장 repo에서 배포 인증서·앱스토어 프로파일 제거
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+        run: |
+          set -euo pipefail
+
+          # MATCH_GIT_BASIC_AUTHORIZATION 정규화: "계정:PAT" 원문 / 그 base64 / PAT 단독 모두 허용
+          owner=$(echo "$MATCH_GIT_URL" | sed -n 's#.*github\.com/\([^/]*\)/.*#\1#p')
+          raw=$(echo "$MATCH_GIT_BASIC_AUTHORIZATION" | tr -d '[:space:]')
+          cred=""
+          case "$raw" in
+            *:*) cred="$raw" ;;
+            ghp_*|github_pat_*) cred="$owner:$raw" ;;
+            *)
+              decoded=$(echo "$raw" | base64 -d 2>/dev/null | tr -d '\n' || true)
+              case "$decoded" in
+                *:*) cred="$decoded" ;;
+                ghp_*|github_pat_*) cred="$owner:$decoded" ;;
+              esac ;;
+          esac
+          if [ -z "$cred" ]; then
+            echo "MATCH_GIT_BASIC_AUTHORIZATION 형식을 해석할 수 없습니다"; exit 1
+          fi
+
+          # 자격증명은 로그에 남지 않도록 netrc로 전달
+          printf 'machine github.com\nlogin %s\npassword %s\n' \
+            "${cred%%:*}" "${cred#*:}" > ~/.netrc
+          chmod 600 ~/.netrc
+
+          git clone "$MATCH_GIT_URL" match-repo
+          cd match-repo
+          echo "--- 삭제 전 파일 목록 ---"
+          git ls-files
+
+          # 폐기된 배포 인증서와 그것으로 만든 App Store 프로파일 제거
+          # (다음 match 실행이 새 인증서·프로파일을 자동 생성해 다시 채운다)
+          git rm -r --ignore-unmatch certs/distribution 'profiles/appstore' || true
+
+          if git diff --cached --quiet; then
+            echo "삭제할 파일이 없습니다 — 이미 정리된 상태"; exit 0
+          fi
+          echo "--- 삭제 후 파일 목록 ---"
+          git ls-files
+          git -c user.name="match-repair" -c user.email="noreply@github.com" \
+            commit -m "폐기된 배포 인증서와 스테일 App Store 프로파일 제거 (match가 재생성)"
+          git push
+          echo "정리 완료 — 이제 TestFlight 워크플로를 실행하면 새 인증서가 발급됩니다"
